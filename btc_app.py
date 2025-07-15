@@ -4,6 +4,11 @@ import pandas as pd
 from datetime import datetime, date
 import os
 
+# Load merged BTC dataset
+df_all = pd.read_csv("btc_all_time.csv")
+df_all['Date'] = pd.to_datetime(df_all['Date'])
+df_all.set_index('Date', inplace=True)
+
 @st.cache_data(ttl=300)
 def get_historical_data():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7"
@@ -115,3 +120,32 @@ if os.path.exists("btc_price_log.csv"):
             st.success("✅ No signs of a peak — current price action is healthy.")
     else:
         st.info("Need at least 7 days of data to detect peak signals.")
+        
+# ========== DAILY GOOGLE SHEET LOGGING ==========
+
+from datetime import date
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+def log_to_google_sheet():
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        client = gspread.authorize(creds)
+
+        sheet = client.open("btc_price_log").sheet1
+        data = sheet.get_all_records()
+        df_sheet = pd.DataFrame(data)
+
+        today = date.today().isoformat()
+
+        if today not in df_sheet["Date"].values:
+            new_row = [today, btc_price, btc_change_24h, change_7d]
+            sheet.append_row(new_row)
+            st.success("✅ BTC data logged to Google Sheet.")
+        else:
+            st.info("🟡 Already logged today.")
+    except Exception as e:
+        st.error(f"❌ Google Sheet logging failed: {e}")
+
+log_to_google_sheet()
