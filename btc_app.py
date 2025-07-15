@@ -1,12 +1,14 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.graph_objects as go
 from btc_trend_classifier import load_google_sheet, label_trend, create_features, train_trend_model
 from datetime import datetime
 import gspread
-from google.oauth2 import service_account  # Replacing oauth2client import with google-auth
+from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
 import json
+import random
+import plotly.graph_objects as go
 
 # --- Streamlit Setup ---
 st.set_page_config(page_title="🐺 BTC Watchdog", layout="centered", initial_sidebar_state="auto")
@@ -20,46 +22,54 @@ def get_live_btc_price_and_change():
         response = requests.get(url)
         data = response.json()
 
-        # Extract the necessary info from the raw data
         if "bitcoin" not in data or "usd" not in data["bitcoin"] or "usd_24h_change" not in data["bitcoin"]:
             raise ValueError("CoinGecko API returned incomplete data")
 
         price = float(data["bitcoin"]["usd"])
         change_percent = float(data["bitcoin"]["usd_24h_change"])
 
-        # Display the important values
         return price, change_percent
 
     except Exception as e:
         st.error(f"❌ Could not fetch live BTC price (CoinGecko): {e}")
         return None, None
 
-
 # --- Google Sheets Setup ---
 @st.cache_data(ttl=86400)  # Cache for 24 hours
-def load_and_cache_google_sheet(sheet_name, worksheet_name):
+def load_google_sheet(sheet_name, worksheet_name):
     try:
-        df = load_google_sheet(sheet_name, worksheet_name)
-        return df
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+        credentials_json = st.secrets["google_credentials"]["value"]
+        credentials_dict = json.loads(credentials_json)
+
+        creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+
+        client = gspread.authorize(creds)
+        sheet = client.open(sheet_name).worksheet(worksheet_name)
+
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
+        df.columns = [col.lower().strip() for col in df.columns]
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+
+        return df  # Return the DataFrame
+
     except Exception as e:
         st.error(f"❌ Failed to load Google Sheet: {e}")
-        st.stop()
-
-# Fetch credentials from Streamlit secrets
-credentials_json = st.secrets["google_credentials"]["value"]
-credentials_dict = json.loads(credentials_json)
-
-# Authenticate with Google Sheets API using the secret credentials
-creds = service_account.Credentials.from_service_account_info(credentials_dict, scopes=["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"])
-
-# Now authorize using gspread
-client = gspread.authorize(creds)
-sheet = client.open("btc_price_log").worksheet("DailyPrice")
+        return None
 
 # --- Fetch & Log Today's Price ---
-def fetch_and_log_today_price(sheet, df):
+def fetch_and_log_today_price(df):
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        if 'price' not in df.columns:
+            df['price'] = pd.Series(dtype='float64')
+
         if today_str in df.index.strftime("%Y-%m-%d").tolist():
             return df
 
@@ -75,60 +85,26 @@ def fetch_and_log_today_price(sheet, df):
         change_7d = ((price - d7_price) / d7_price) * 100 if d7_price else 0
 
         new_row = [today_str, round(price, 2), round(change_24h, 2), round(change_7d, 2)]
-        sheet.append_row(new_row)
-
-        new_df = df.copy()
-        new_df.loc[pd.to_datetime(today_str)] = {
+        df.loc[pd.to_datetime(today_str)] = {
             "price": price,
             "change_24h": change_24h,
             "change_7d": change_7d
         }
-        return new_df
+
+        return df
 
     except Exception as e:
         st.warning(f"⚠️ Could not log today's BTC data: {e}")
         return df
-    
 
-import random
-
-# --- Altseason Score ---
-st.subheader("🔀 Altseason Rotation Signal")
-
-@st.cache_data(ttl=86400)  # Cache for 24 hours
+# --- Altseason Score (Placeholder function) ---
 def altseason_score(df):
-    """Simulates an Altseason Score using BTC performance and mock dominance/ETH ratio."""
-
-    # Use last 7-day return
-    recent_gain = df['change_7d'].iloc[-1]
-
-    # Simulate BTC dominance drop (lower dominance favors altseason)
-    mock_dominance = random.uniform(43.0, 52.0)  # Fake range
-    dominance_score = 100 - mock_dominance  # Lower dominance = higher score
-
-    # Simulate ETH/BTC ratio (higher = better for alts)
-    mock_eth_btc_ratio = random.uniform(0.055, 0.075)
-    eth_ratio_score = (mock_eth_btc_ratio - 0.05) * 1000  # Normalize to ~50–75 range
-
-    # BTC weekly performance impact
-    gain_score = recent_gain if recent_gain > 0 else 0
-
-    # Final score out of 100
-    score = min((dominance_score * 0.4 + eth_ratio_score * 0.4 + gain_score * 0.2), 100)
-
-    # Interpretation
-    if score > 75:
-        level = "HIGH"
-        msg = "🚀 BTC dominance falling, ETH/BTC rising → Alts heating up"
-    elif score > 50:
-        level = "MODERATE"
-        msg = "⚠️ Early signs of rotation to alts"
-    else:
-        level = "LOW"
-        msg = "📉 BTC still dominant — altseason not ready"
-
-    return round(score, 2), level, msg, mock_dominance, mock_eth_btc_ratio
-
+    score = 27.91  # Example score
+    level = "LOW"
+    msg = "📉 BTC still dominant — altseason not ready"
+    mock_dominance = 43.61
+    mock_eth_ratio = 0.0634
+    return score, level, msg, mock_dominance, mock_eth_ratio
 
 # --- App Start ---
 live_price, change_percent = get_live_btc_price_and_change()
@@ -140,24 +116,35 @@ else:
     st.error("❌ Could not fetch BTC price data.")
 
 try:
-    df = load_and_cache_google_sheet("btc_price_log", "DailyPrice")
-    df = fetch_and_log_today_price(sheet, df)
-    st.success("✅ Successfully loaded data from Google Sheet")
+    # Load Google Sheet and DataFrame
+    sheet_name = "btc_price_log"
+    worksheet_name = "DailyPrice"
+    df = load_google_sheet(sheet_name, worksheet_name)
+
+    if df is not None:
+        # Fetch and log today's price
+        df = fetch_and_log_today_price(df)
+        st.success("✅ Successfully loaded data from Google Sheet")
+
+        # Check if 'price' column exists in df
+        if 'price' not in df.columns:
+            st.error("❌ 'price' column is missing from the data.")
+            st.stop()
+
+        # Process the DataFrame
+        df = label_trend(df)
+        df = create_features(df)
+
+        st.info(f"🧮 Rows after feature engineering: {len(df)}")
+
+        # Train the model
+        model = train_trend_model(df)
+
+    else:
+        st.error("❌ Failed to load data from Google Sheet.")
+
 except Exception as e:
     st.error(f"❌ Failed to load Google Sheet: {e}")
-    st.stop()
-
-# Continue with your ML pipeline, trend prediction, etc.
-
-
-# --- ML Pipeline ---
-try:
-    df = label_trend(df)
-    df = create_features(df)
-    st.info(f"🧮 Rows after feature engineering: {len(df)}")
-    model = train_trend_model(df)
-except Exception as e:
-    st.error(f"❌ Model training error: {e}")
     st.stop()
 
 # --- Trend Prediction ---
@@ -165,12 +152,12 @@ latest_data = df.iloc[-1:][['ret_1d', 'ret_3d', 'ret_7d', 'volatility_7d']]
 trend_prediction = model.predict(latest_data)[0]
 st.metric("📊 Predicted Trend", trend_prediction)
 
+
 # --- Altseason Score ---
 st.subheader("🔀 Altseason Rotation Signal")
 
 try:
     score, level, msg, mock_dominance, mock_eth_ratio = altseason_score(df)
-
     st.metric("🧠 Altseason Score", f"{score}%", f"{level}")
     st.write(msg)
     st.caption(f"Simulated BTC Dominance: {mock_dominance:.2f}%")
@@ -179,11 +166,10 @@ try:
 except Exception as e:
     st.warning(f"⚠️ Could not calculate Altseason Score: {e}")
 
-
-# --- 7-Day BTC Trend Chart ---
+# --- 7-Day BTC Price Trend ---
 st.subheader("📈 7-Day BTC Price Trend")
 try:
-    trend_df = df[-7:].copy()
+    trend_df = df[-7:].copy()  # Ensure you are taking the last 7 days of data
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=trend_df.index, y=trend_df['price'], mode='lines+markers', name='BTC Price'))
     fig.update_layout(template="plotly_dark", title="BTC Price (Last 7 Days)", xaxis_title="Date", yaxis_title="Price (USD)")
@@ -191,14 +177,17 @@ try:
 except Exception as e:
     st.warning(f"⚠️ Could not render 7-day trend chart: {e}")
 
-# --- Personal History Log ---
+
 # --- Personal History Log ---
 st.subheader("🧾 Your Personal History: Daily Log")
 try:
     history_df = df[['price', 'change_24h', 'change_7d', 'trend']].tail(7).copy()
+    history_df = history_df.reset_index(drop=True)  # Reset index to avoid non-unique index issues
+
     for col in ['price', 'change_24h', 'change_7d']:
         history_df[col] = pd.to_numeric(history_df[col], errors='coerce')
 
+    styled_df = history_df
     styled_df = history_df.style \
         .format("{:.2f}", subset=['price', 'change_24h', 'change_7d']) \
         .background_gradient(subset=['change_24h'], cmap='Greens') \
@@ -209,6 +198,74 @@ try:
 except Exception as e:
     st.warning(f"⚠️ Could not show history table: {e}")
 
+# --- Change Summary ---
+st.subheader("📉 Trend Summary (Last Entry)")
+last_row = df.iloc[-1]
+change_24h = last_row['change_24h']
+change_7d = last_row['change_7d']
+arrow_24h = "🔺" if change_24h > 0 else "🔻"
+arrow_7d = "🔺" if change_7d > 0 else "🔻"
+st.write(f"**24h Change:** {arrow_24h} {change_24h:.2f}%")
+st.write(f"**7d Change:** {arrow_7d} {change_7d:.2f}%")
+
+# --- 30-Day Price Chart ---
+st.subheader("📉 BTC Price (Last 30 Days)")
+try:
+    price_chart = df[-30:].copy()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=price_chart.index, y=price_chart['price'], mode='lines+markers', name='BTC Price'))
+    fig.update_layout(template="plotly_dark", title="BTC Price Over Last 30 Days", xaxis_title="Date", yaxis_title="Price (USD)")
+    st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.warning(f"⚠️ Could not render 30-day trend chart: {e}")
+
+# --- Trend History Table ---
+st.subheader("📘 BTC Trend History (Last 7 Days)")
+try:
+    # Extract the last 7 days of price and trend data
+    trend_history = df[['price', 'trend']].tail(7).copy()
+
+    # Reset the index to ensure it's unique
+    trend_history = trend_history.reset_index(drop=True)  # Resetting the index
+
+    # Ensure 'price' is numeric
+    trend_history['price'] = pd.to_numeric(trend_history['price'], errors='coerce')
+
+    # Apply styling
+    styled_trend = trend_history.style \
+        .format("{:.2f}", subset=['price']) \
+        .set_properties(**{'background-color': '#111', 'color': 'white'})
+
+    st.dataframe(styled_trend, use_container_width=True)
+
+except Exception as e:
+    st.warning(f"⚠️ Could not render trend history table: {e}")
+
+# --- Bull Market Signal Detector ---
+st.subheader("📈 Bull Market Signal Detector")
+if len(df) < 8:
+    st.warning("⚠️ Need at least 8 days of price data to detect bull signals (20%+ gain in 7 days).")
+else:
+    try:
+        df['gain_7d'] = df['price'].pct_change(periods=7)
+        bull_df = df[df['gain_7d'] >= 0.2]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=df['price'], mode='lines', name='BTC Price'))
+        if not bull_df.empty:
+            fig.add_trace(go.Scatter(x=bull_df.index, y=bull_df['price'], mode='markers', marker=dict(color='red', size=10), name='20%+ Gain'))
+        fig.update_layout(template="plotly_dark", title="BTC Price with Bull Signals (20%+ Gain in 7 Days)", xaxis_title="Date", yaxis_title="Price (USD)")
+        st.plotly_chart(fig, use_container_width=True)
+
+        if bull_df.empty:
+            st.info("ℹ️ No 20%+ bull signals detected yet.")
+    except Exception as e:
+        st.warning(f"⚠️ Could not run signal detector: {e}")
+
+
+# --- Raw Data Preview ---
+with st.expander("📄 View raw data"):
+    st.dataframe(df.tail(10))
 
 
 # --- Change Summary ---
