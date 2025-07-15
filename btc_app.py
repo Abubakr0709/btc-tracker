@@ -169,13 +169,14 @@ except Exception as e:
 # --- 7-Day BTC Price Trend ---
 st.subheader("📈 7-Day BTC Price Trend")
 try:
-    trend_df = df[-7:].copy()  # Ensure you are taking the last 7 days of data
+    trend_df = df[-7:].copy()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=trend_df.index, y=trend_df['price'], mode='lines+markers', name='BTC Price'))
     fig.update_layout(template="plotly_dark", title="BTC Price (Last 7 Days)", xaxis_title="Date", yaxis_title="Price (USD)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="7-day-trend-chart")  # Adding a unique key
 except Exception as e:
     st.warning(f"⚠️ Could not render 7-day trend chart: {e}")
+
 
 
 # --- Personal History Log ---
@@ -215,9 +216,10 @@ try:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=price_chart.index, y=price_chart['price'], mode='lines+markers', name='BTC Price'))
     fig.update_layout(template="plotly_dark", title="BTC Price Over Last 30 Days", xaxis_title="Date", yaxis_title="Price (USD)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="30-day-trend-chart")  # Adding a unique key
 except Exception as e:
     st.warning(f"⚠️ Could not render 30-day trend chart: {e}")
+
 
 # --- Trend History Table ---
 st.subheader("📘 BTC Trend History (Last 7 Days)")
