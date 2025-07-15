@@ -4,3 +4,4 @@ requests
 matplotlib
 plotly
 gspread
+oauth2client
