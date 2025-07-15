@@ -5,25 +5,29 @@ import plotly.graph_objects as go
 from btc_trend_classifier import load_google_sheet, label_trend, create_features, train_trend_model
 from datetime import datetime
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account  # Replacing oauth2client import with google-auth
+import json
 
 # --- Streamlit Setup ---
 st.set_page_config(page_title="🐺 BTC Watchdog", layout="centered", initial_sidebar_state="auto")
 st.title("🐺 BTC Watchdog Dashboard")
 
 # --- Live Price Fetch ---
+@st.cache_data(ttl=86400)  # Cache for 24 hours
 def get_live_btc_price_and_change():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url)
         data = response.json()
 
-        # Check if expected keys exist
+        # Extract the necessary info from the raw data
         if "bitcoin" not in data or "usd" not in data["bitcoin"] or "usd_24h_change" not in data["bitcoin"]:
             raise ValueError("CoinGecko API returned incomplete data")
 
         price = float(data["bitcoin"]["usd"])
         change_percent = float(data["bitcoin"]["usd_24h_change"])
+
+        # Display the important values
         return price, change_percent
 
     except Exception as e:
@@ -32,12 +36,25 @@ def get_live_btc_price_and_change():
 
 
 # --- Google Sheets Setup ---
-sheet_name = "btc_price_log"
-worksheet_name = "DailyPrice"
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def load_and_cache_google_sheet(sheet_name, worksheet_name):
+    try:
+        df = load_google_sheet(sheet_name, worksheet_name)
+        return df
+    except Exception as e:
+        st.error(f"❌ Failed to load Google Sheet: {e}")
+        st.stop()
+
+# Fetch credentials from Streamlit secrets
+credentials_json = st.secrets["google_credentials"]["value"]
+credentials_dict = json.loads(credentials_json)
+
+# Authenticate with Google Sheets API using the secret credentials
+creds = service_account.Credentials.from_service_account_info(credentials_dict, scopes=["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"])
+
+# Now authorize using gspread
 client = gspread.authorize(creds)
-sheet = client.open(sheet_name).worksheet(worksheet_name)
+sheet = client.open("btc_price_log").worksheet("DailyPrice")
 
 # --- Fetch & Log Today's Price ---
 def fetch_and_log_today_price(sheet, df):
@@ -75,6 +92,10 @@ def fetch_and_log_today_price(sheet, df):
 
 import random
 
+# --- Altseason Score ---
+st.subheader("🔀 Altseason Rotation Signal")
+
+@st.cache_data(ttl=86400)  # Cache for 24 hours
 def altseason_score(df):
     """Simulates an Altseason Score using BTC performance and mock dominance/ETH ratio."""
 
@@ -111,17 +132,23 @@ def altseason_score(df):
 
 # --- App Start ---
 live_price, change_percent = get_live_btc_price_and_change()
-if live_price is not None:
+
+if live_price is not None and change_percent is not None:
     arrow = "🔺" if change_percent >= 0 else "🔻"
-    st.metric("💸 Live BTC Price (Binance)", f"${live_price:,.2f}", f"{arrow} {abs(change_percent):.2f}%")
+    st.metric("💸 Live BTC Price (CoinGecko)", f"${live_price:,.2f}", f"{arrow} {abs(change_percent):.2f}%")
+else:
+    st.error("❌ Could not fetch BTC price data.")
 
 try:
-    df = load_google_sheet(sheet_name, worksheet_name)
+    df = load_and_cache_google_sheet("btc_price_log", "DailyPrice")
     df = fetch_and_log_today_price(sheet, df)
     st.success("✅ Successfully loaded data from Google Sheet")
 except Exception as e:
     st.error(f"❌ Failed to load Google Sheet: {e}")
     st.stop()
+
+# Continue with your ML pipeline, trend prediction, etc.
+
 
 # --- ML Pipeline ---
 try:
