@@ -1,16 +1,37 @@
 import streamlit as st
 import requests
 import pandas as pd
-from btc_trend_classifier import load_google_sheet, label_trend, create_features, train_trend_model
 from datetime import datetime
+import random
+import json
+import os
+
 import gspread
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
-import json
-import random
+
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+
+
+# ✅ Load .env variables early
+load_dotenv()
+
+# ✅ Load and validate GOOGLE_CREDENTIALS_JSON from .env
+credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+if not credentials_json:
+    st.error("❌ GOOGLE_CREDENTIALS_JSON not found in environment variables.")
+    st.stop()
+
+try:
+    credentials_dict = json.loads(credentials_json)
+except json.JSONDecodeError as e:
+    st.error(f"❌ Failed to parse GOOGLE_CREDENTIALS_JSON: {e}")
+    st.stop()
+
+# ✅ Now it's safe to import custom modules that rely on Google Sheets
+from btc_trend_classifier import load_google_sheet, label_trend, create_features, train_trend_model
 from btc_cycle_analyzer import detect_bull_cycles, cluster_bull_signals, align_cycles
-import os
 
 
 # --- Load Full Historical BTC Data ---
@@ -104,49 +125,6 @@ from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 import gspread
 import pandas as pd
-
-
-import toml
-
-@st.cache_data(ttl=86400)
-def load_google_sheet(sheet_name, worksheet_name):
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-
-        if "google_credentials" not in st.secrets:
-            st.error("❌ 'google_credentials' not found in Streamlit secrets.")
-            st.stop()
-
-        credentials_dict = json.loads(st.secrets["google_credentials"]["value"])
-
-
-
-
-        creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        client = gspread.authorize(creds)
-        sheet = client.open(sheet_name).worksheet(worksheet_name)
-
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-        df.columns = [col.lower().strip() for col in df.columns]
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        df.set_index('date', inplace=True)
-
-        # Force numeric columns
-        for col in ['price', 'change_24h', 'change_7d']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        return df
-
-    except Exception as e:
-        st.error(f"❌ Failed to load Google Sheet: {e}")
-        return None
-
-
 
     
 # --- Load Full Historical BTC Data (2010–2025) ---
@@ -334,9 +312,13 @@ else:
 
 try:
     # Load Google Sheet and DataFrame
-    sheet_name = "btc_price_log"
-    worksheet_name = "DailyPrice"
-    df = load_google_sheet(sheet_name, worksheet_name)
+    # Load Google Sheet and DataFrame
+    sheet_name = "btc_price_log"          # <-- This is the spreadsheet name (top-left title in Google Sheets)
+    worksheet_name = "DailyPrice"       # <-- This is the sheet/tab name (bottom tab in Google Sheets)
+    df = load_google_sheet(sheet_name, worksheet_name, credentials_dict)
+
+
+
 
     if df is not None:
         # Fetch and log today's price

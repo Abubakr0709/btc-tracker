@@ -1,31 +1,46 @@
+from google.oauth2.service_account import Credentials  # ✅ correct import
 import pandas as pd
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.auth.transport.requests import Request
+import streamlit as st
 
-import streamlit as st  # make sure this is at the top of your file
+def load_google_sheet(sheet_name, worksheet_name, credentials_dict):
 
-def load_google_sheet(sheet_name, worksheet_name, raw=False):
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-    client = gspread.authorize(creds)
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
 
-    sheet = client.open(sheet_name).worksheet(worksheet_name)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
 
-    if raw:
-        return sheet
+        client = gspread.authorize(creds)
+        sheet = client.open(sheet_name).worksheet(worksheet_name)
 
-    data = sheet.get_all_records()
-    df = pd.DataFrame(data)
-    df.columns = [col.lower().strip() for col in df.columns]
+        data = sheet.get_all_records()
+        if not data:
+            st.error("❌ Google Sheet is empty or headers are missing.")
+            return None
 
-    if 'date' not in df.columns:
-        raise KeyError("❌ 'date' column not found in Google Sheet. Check header spelling and casing.")
+        df = pd.DataFrame(data)
+        df.columns = [col.lower().strip() for col in df.columns]
 
-    df['date'] = pd.to_datetime(df['date'])
-    df.set_index('date', inplace=True)
-    return df
+        if 'date' not in df.columns:
+            st.error("❌ 'date' column missing in Google Sheet.")
+            return None
 
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df.set_index('date', inplace=True)
 
+        for col in ['price', 'change_24h', 'change_7d']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df
+
+    except Exception as e:
+        import traceback
+        st.error(f"❌ Failed to load Google Sheet:\n{traceback.format_exc()}")
+        return None
 
 
 def label_trend(df, window=7, up_thresh=0.04, down_thresh=-0.04):
