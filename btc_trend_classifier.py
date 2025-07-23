@@ -55,20 +55,53 @@ def create_features(df):
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
+import joblib
+import os
 
-def train_trend_model(df):
+MODEL_PATH = "models/random_forest.pkl"
+
+def train_trend_model(df, save=True, model_path="models/model.pkl"):
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import classification_report
+    import joblib
+    import os
+
     X = df[['ret_1d', 'ret_3d', 'ret_7d', 'volatility_7d']]
     y = df['trend']
-    
+
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
 
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
-    
+
     y_pred = model.predict(X_test)
     print(classification_report(y_test, y_pred))
-    
+
+    if save:
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        joblib.dump(model, model_path)
+
     return model
+
+
+
+def load_trained_model():
+    if os.path.exists(MODEL_PATH):
+        return joblib.load(MODEL_PATH)
+    return None
+
+import joblib
+
+def load_custom_model(path):
+    try:
+        model = joblib.load(path)
+        return model
+    except Exception as e:
+        print(f"❌ Failed to load model from {path}: {e}")
+        return None
+
 
 
 

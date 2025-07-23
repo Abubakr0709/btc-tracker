@@ -9,30 +9,80 @@ from google.oauth2.service_account import Credentials
 import json
 import random
 import plotly.graph_objects as go
+from btc_cycle_analyzer import detect_bull_cycles, cluster_bull_signals, align_cycles
+
+
+# --- Load Full Historical BTC Data ---
+@st.cache_data(ttl=86400)
+def load_full_btc_data(csv_path="btc_cleaning_till2025.csv"):
+    try:
+        df = pd.read_csv(csv_path)
+        df.columns = [col.lower().strip() for col in df.columns]
+
+        # Rename 'close' to 'price' if needed
+        if "close" in df.columns:
+            df.rename(columns={"close": "price"}, inplace=True)
+
+        if "price" not in df.columns:
+            raise KeyError("❌ No 'price' column found.")
+
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+
+        return df
+    except Exception as e:
+        st.error(f"❌ Failed to load full BTC history: {e}")
+        return None
+
+
 
 # --- Streamlit Setup ---
 st.set_page_config(page_title="🐺 BTC Watchdog", layout="centered", initial_sidebar_state="auto")
 st.title("🐺 BTC Watchdog Dashboard")
 
 # --- Live Price Fetch ---
-@st.cache_data(ttl=86400)  # Cache for 24 hours
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_live_btc_price_and_change():
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-        response = requests.get(url)
-        data = response.json()
+        # Current price
+        url_current = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+        response_current = requests.get(url_current)
+        price_now = float(response_current.json()['price'])
 
-        if "bitcoin" not in data or "usd" not in data["bitcoin"] or "usd_24h_change" not in data["bitcoin"]:
-            raise ValueError("CoinGecko API returned incomplete data")
+        # Simulated 24h ago price using 24hr ticker data
+        url_24h = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+        response_24h = requests.get(url_24h)
+        data_24h = response_24h.json()
 
-        price = float(data["bitcoin"]["usd"])
-        change_percent = float(data["bitcoin"]["usd_24h_change"])
+        price_24h_ago = price_now / (1 + float(data_24h["priceChangePercent"]) / 100)
+        change_percent = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
-        return price, change_percent
+        return price_now, change_percent
 
     except Exception as e:
-        st.error(f"❌ Could not fetch live BTC price (CoinGecko): {e}")
+        st.error(f"❌ Could not fetch live BTC price (Binance): {e}")
         return None, None
+    
+def get_altseason_metrics():
+    try:
+        # ETH/BTC and USD prices
+        url_price = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,btc"
+        price_data = requests.get(url_price).json()
+
+        eth_btc = price_data["ethereum"]["btc"]
+        btc_usd = price_data["bitcoin"]["usd"]
+        eth_usd = price_data["ethereum"]["usd"]
+
+        # BTC dominance
+        url_dom = "https://api.coingecko.com/api/v3/global"
+        dom_data = requests.get(url_dom).json()
+        btc_dominance = dom_data["data"]["market_cap_percentage"]["btc"]
+
+        return btc_dominance, eth_btc, btc_usd, eth_usd
+    except Exception as e:
+        st.warning(f"⚠️ Could not fetch altseason metrics: {e}")
+        return None, None, None, None
+
 
 # --- Google Sheets Setup ---
 @st.cache_data(ttl=86400)  # Cache for 24 hours
@@ -61,6 +111,133 @@ def load_google_sheet(sheet_name, worksheet_name):
     except Exception as e:
         st.error(f"❌ Failed to load Google Sheet: {e}")
         return None
+    
+# --- Load Full Historical BTC Data (2010–2025) ---
+@st.cache_data(ttl=86400)
+def load_full_btc_data(csv_path="btc_cleaning_till2025.csv"):
+    try:
+        df = pd.read_csv(csv_path)
+        df.columns = [col.lower().strip() for col in df.columns]
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+
+        # ✅ Ensure 'price' column exists
+        if "price" not in df.columns and "close" in df.columns:
+            df["price"] = df["close"]
+
+        return df
+    except Exception as e:
+        st.error(f"❌ Failed to load full BTC history: {e}")
+        return None
+
+btc_full_df = load_full_btc_data()
+# --- Process Full BTC History for Trend Modeling ---
+if btc_full_df is not None:
+    from btc_trend_classifier import label_trend, create_features
+
+    btc_full_df = label_trend(btc_full_df)
+    btc_full_df = create_features(btc_full_df)
+
+    st.info(f"📊 Processed full BTC dataset: {len(btc_full_df)} rows after feature engineering")
+    # --- Train Model on Full History ---
+    from btc_trend_classifier import train_trend_model
+
+    st.subheader("🧠 Training on Full BTC History (2010–2025)")
+
+    model_full = train_trend_model(btc_full_df)
+
+    st.success("✅ Model trained on full historical BTC data!")
+
+
+if btc_full_df is not None:
+    st.success(f"📚 Loaded full BTC history: {len(btc_full_df)} rows")
+    st.dataframe(btc_full_df.tail(3))  # Optional preview
+
+    # --- Bull Cluster Shaded Chart ---
+    st.subheader("📈 Historical Bull Market Clusters")
+
+    try:
+        import matplotlib.pyplot as plt
+
+        weekly = btc_full_df['price'].resample('W').last()
+        weekly_change = weekly.pct_change()
+        bull_mask = weekly_change >= 0.20
+
+        bull_runs = []
+        run_start = None
+
+        for i in range(len(bull_mask)):
+            if bull_mask[i] and run_start is None:
+                run_start = bull_mask.index[i]
+            elif not bull_mask[i] and run_start is not None:
+                run_end = bull_mask.index[i - 1]
+                bull_runs.append((run_start, run_end))
+                run_start = None
+        if run_start is not None:
+            bull_runs.append((run_start, bull_mask.index[-1]))
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(weekly.index, weekly, label="BTC Weekly Close", color='blue', linewidth=1.2)
+
+        for start, end in bull_runs:
+            ax.axvspan(start, end, color='green', alpha=0.3)
+
+        ax.set_title("BTC Bull Market Clusters (2010–2025)")
+        ax.set_ylabel("Price (USD)")
+        ax.set_xlabel("Year")
+        ax.legend()
+        ax.grid(True)
+
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"❌ Could not render bull cluster chart: {e}")
+
+# --- Bull Cluster Summary Table ---
+st.subheader("📘 Bull Run Periods Summary Table")
+
+
+try:
+    # Reuse weekly and bull_mask from previous block
+    bull_weeks = weekly_change[weekly_change >= 0.20]
+
+    # Identify consecutive bull run periods
+    bull_runs = []
+    run_start = None
+
+    for i in range(len(bull_mask)):
+        if bull_mask[i] and run_start is None:
+            run_start = bull_mask.index[i]
+        elif not bull_mask[i] and run_start is not None:
+            run_end = bull_mask.index[i - 1]
+            if run_start != run_end:
+                duration = (run_end - run_start).days // 7
+                gain = (weekly[run_end] - weekly[run_start]) / weekly[run_start] * 100
+                bull_runs.append((run_start.date(), run_end.date(), duration, round(gain, 2)))
+            run_start = None
+
+    # Handle last run if still open
+    if run_start is not None and run_start != bull_mask.index[-1]:
+        run_end = bull_mask.index[-1]
+        duration = (run_end - run_start).days // 7
+        gain = (weekly[run_end] - weekly[run_start]) / weekly[run_start] * 100
+        bull_runs.append((run_start.date(), run_end.date(), duration, round(gain, 2)))
+
+
+    summary_df = pd.DataFrame(bull_runs, columns=["Start", "End", "Duration (weeks)", "Total Gain (%)"])
+    st.dataframe(summary_df.style.format({"Total Gain (%)": "{:.2f}"}))
+
+
+    # Optional: Add yearly count
+    st.subheader("📊 Bull Run Frequency by Year")
+    summary_df["Year"] = pd.to_datetime(summary_df["Start"]).dt.year
+    yearly_counts = summary_df["Year"].value_counts().sort_index()
+    st.bar_chart(yearly_counts)
+
+except Exception as e:
+    st.error(f"❌ Could not generate bull summary: {e}")
+
+
 
 # --- Fetch & Log Today's Price ---
 def fetch_and_log_today_price(df):
@@ -111,7 +288,8 @@ live_price, change_percent = get_live_btc_price_and_change()
 
 if live_price is not None and change_percent is not None:
     arrow = "🔺" if change_percent >= 0 else "🔻"
-    st.metric("💸 Live BTC Price (CoinGecko)", f"${live_price:,.2f}", f"{arrow} {abs(change_percent):.2f}%")
+    st.metric("💸 Live BTC Price (Binance)", f"${live_price:,.2f}", f"{arrow} {abs(change_percent):.2f}%")
+
 else:
     st.error("❌ Could not fetch BTC price data.")
 
@@ -126,6 +304,14 @@ try:
         df = fetch_and_log_today_price(df)
         st.success("✅ Successfully loaded data from Google Sheet")
 
+        # --- Load full historical BTC data from local CSV ---
+        btc_full_df = load_full_btc_data()
+
+        if btc_full_df is not None:
+            st.success(f"📚 Loaded full BTC history: {len(btc_full_df)} rows")
+            st.dataframe(btc_full_df.tail(3))  # Optional preview
+
+
         # Check if 'price' column exists in df
         if 'price' not in df.columns:
             st.error("❌ 'price' column is missing from the data.")
@@ -137,8 +323,34 @@ try:
 
         st.info(f"🧮 Rows after feature engineering: {len(df)}")
 
-        # Train the model
-        model = train_trend_model(df)
+        # --- Train or Load Model ---
+        # --- Load Pretrained Full History Model ---
+        import os
+        from btc_trend_classifier import load_custom_model
+
+        model_path = "models/full_history_model.pkl"
+
+        if os.path.exists(model_path):
+            model = load_custom_model(model_path)
+            st.success("✅ Loaded model trained on full BTC history (2010–2025)")
+        else:
+            st.error("❌ Full history model not found. Please train it first.")
+            st.stop()
+
+
+
+        # --- Manual Retrain Button ---
+        st.divider()
+        st.subheader("🔧 Manual Controls")
+
+        if st.button("🔁 Retrain Model Now"):
+            model = train_trend_model(df)
+            st.success("✅ Model retrained manually.")
+
+
+
+
+
 
     else:
         st.error("❌ Failed to load data from Google Sheet.")
@@ -157,14 +369,46 @@ st.metric("📊 Predicted Trend", trend_prediction)
 st.subheader("🔀 Altseason Rotation Signal")
 
 try:
-    score, level, msg, mock_dominance, mock_eth_ratio = altseason_score(df)
-    st.metric("🧠 Altseason Score", f"{score}%", f"{level}")
+    btc_dom, eth_btc, btc_usd, eth_usd = get_altseason_metrics()
+
+    score = 0
+
+    # BTC dominance points
+    if btc_dom < 40:
+        score += 50
+    elif btc_dom < 45:
+        score += 30
+    elif btc_dom < 50:
+        score += 10
+
+    # ETH/BTC ratio points
+    if eth_btc > 0.08:
+        score += 50
+    elif eth_btc > 0.07:
+        score += 30
+    elif eth_btc > 0.065:
+        score += 10
+
+    # Score level
+    if score >= 70:
+        level = "HIGH"
+        msg = "🌊 Altseason likely — altcoins gaining strongly!"
+    elif score >= 40:
+        level = "MEDIUM"
+        msg = "⚠️ Altseason brewing — watch closely."
+    else:
+        level = "LOW"
+        msg = "📉 BTC still dominant — altseason not ready."
+
+    # Display
+    st.metric("🧠 Altseason Score", f"{score}%", level)
     st.write(msg)
-    st.caption(f"Simulated BTC Dominance: {mock_dominance:.2f}%")
-    st.caption(f"Simulated ETH/BTC Ratio: {mock_eth_ratio:.4f}")
+    st.caption(f"BTC Dominance: {btc_dom:.2f}%")
+    st.caption(f"ETH/BTC Ratio: {eth_btc:.4f}")
 
 except Exception as e:
     st.warning(f"⚠️ Could not calculate Altseason Score: {e}")
+
 
 # --- 7-Day BTC Price Trend ---
 st.subheader("📈 7-Day BTC Price Trend")
@@ -245,24 +489,34 @@ except Exception as e:
 
 # --- Bull Market Signal Detector ---
 st.subheader("📈 Bull Market Signal Detector")
-if len(df) < 8:
-    st.warning("⚠️ Need at least 8 days of price data to detect bull signals (20%+ gain in 7 days).")
-else:
-    try:
-        df['gain_7d'] = df['price'].pct_change(periods=7)
-        bull_df = df[df['gain_7d'] >= 0.2]
+
+try:
+    # Make sure we have at least 8 valid price points (no NaN)
+    df_valid = df[df['price'].notna()]
+    
+    if len(df_valid) < 8:
+        st.warning("⚠️ Need at least 8 valid days of price data to detect bull signals (20%+ gain in 7 days).")
+    else:
+        df_valid['gain_7d'] = df_valid['price'].pct_change(periods=7)
+        bull_df = df_valid[df_valid['gain_7d'] >= 0.2]
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df.index, y=df['price'], mode='lines', name='BTC Price'))
+        fig.add_trace(go.Scatter(x=df_valid.index, y=df_valid['price'], mode='lines', name='BTC Price'))
+
         if not bull_df.empty:
-            fig.add_trace(go.Scatter(x=bull_df.index, y=bull_df['price'], mode='markers', marker=dict(color='red', size=10), name='20%+ Gain'))
-        fig.update_layout(template="plotly_dark", title="BTC Price with Bull Signals (20%+ Gain in 7 Days)", xaxis_title="Date", yaxis_title="Price (USD)")
+            fig.add_trace(go.Scatter(x=bull_df.index, y=bull_df['price'], mode='markers',
+                                     marker=dict(color='red', size=10), name='20%+ Gain'))
+
+        fig.update_layout(template="plotly_dark",
+                          title="BTC Price with Bull Signals (20%+ Gain in 7 Days)",
+                          xaxis_title="Date", yaxis_title="Price (USD)")
+
         st.plotly_chart(fig, use_container_width=True)
 
         if bull_df.empty:
             st.info("ℹ️ No 20%+ bull signals detected yet.")
-    except Exception as e:
-        st.warning(f"⚠️ Could not run signal detector: {e}")
+except Exception as e:
+    st.warning(f"⚠️ Could not run signal detector: {e}")
 
 
 # --- Raw Data Preview ---
@@ -306,27 +560,33 @@ try:
 except Exception as e:
     st.warning(f"⚠️ Could not render trend history table: {e}")
 
-# --- Bull Market Signal Detector ---
-st.subheader("📈 Bull Market Signal Detector")
-if len(df) < 8:
-    st.warning("⚠️ Need at least 8 days of price data to detect bull signals (20%+ gain in 7 days).")
-else:
-    try:
-        df['gain_7d'] = df['price'].pct_change(periods=7)
-        bull_df = df[df['gain_7d'] >= 0.2]
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df.index, y=df['price'], mode='lines', name='BTC Price'))
-        if not bull_df.empty:
-            fig.add_trace(go.Scatter(x=bull_df.index, y=bull_df['price'], mode='markers', marker=dict(color='red', size=10), name='20%+ Gain'))
-        fig.update_layout(template="plotly_dark", title="BTC Price with Bull Signals (20%+ Gain in 7 Days)", xaxis_title="Date", yaxis_title="Price (USD)")
-        st.plotly_chart(fig, use_container_width=True)
-
-        if bull_df.empty:
-            st.info("ℹ️ No 20%+ bull signals detected yet.")
-    except Exception as e:
-        st.warning(f"⚠️ Could not run signal detector: {e}")
-
 # --- Raw Data Preview ---
 with st.expander("📄 View raw data"):
     st.dataframe(df.tail(10))
+
+
+# --- Save Today's Entry to Google Sheet (Optional Logging to Sheet) ---
+def log_today_to_google_sheet():
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        credentials_json = st.secrets["google_credentials"]["value"]
+        credentials_dict = json.loads(credentials_json)
+        creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("btc_price_log").worksheet("DailyPrice")
+
+        # Check existing dates to prevent duplicates
+        existing_dates = sheet.col_values(1)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        if today_str in existing_dates:
+            st.info("📌 Today's entry already exists in Google Sheet.")
+            return
+
+        # Get the last logged row from df
+        last_row = df.iloc[-1]
+        new_row = [today_str, round(last_row['price'], 2), round(last_row['change_24h'], 2), round(last_row['change_7d'], 2), last_row['trend']]
+        sheet.append_row(new_row)
+        st.success("✅ Logged today’s data to Google Sheet.")
+    except Exception as e:
+        st.warning(f"⚠️ Could not log to Google Sheet: {e}")
