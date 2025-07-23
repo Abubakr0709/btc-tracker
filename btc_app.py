@@ -41,27 +41,17 @@ st.set_page_config(page_title="🐺 BTC Watchdog", layout="centered", initial_si
 st.title("🐺 BTC Watchdog Dashboard")
 
 # --- Live Price Fetch ---
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def get_live_btc_price_and_change():
     try:
-        # Current price (USD)
-        url_now = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        response_now = requests.get(url_now, timeout=10)
-        response_now.raise_for_status()
-        data_now = response_now.json()
+        url = "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=true"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-        if 'bitcoin' not in data_now or 'usd' not in data_now['bitcoin']:
-            raise ValueError(f"'usd' not found in CoinGecko response: {data_now}")
+        price_now = data['market_data']['current_price']['usd']
+        price_change_percent = data['market_data']['price_change_percentage_24h']
 
-        price_now = float(data_now['bitcoin']['usd'])
-
-        # Simulate 24h ago price using 24h % change
-        url_24h = "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=true"
-        response_24h = requests.get(url_24h, timeout=10)
-        response_24h.raise_for_status()
-        data_24h = response_24h.json()
-
-        price_change_percent = data_24h['market_data']['price_change_percentage_24h']
         price_24h_ago = price_now / (1 + price_change_percent / 100)
         change_percent = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
@@ -71,8 +61,9 @@ def get_live_btc_price_and_change():
         st.error(f"❌ Could not fetch live BTC price (CoinGecko): {e}")
         return None, None
 
+
     
-@st.cache_data(ttl=600)  # cache result for 10 minutes
+@st.cache_data(ttl=1800)  # cache result for 10 minutes
 def get_altseason_metrics():
     try:
         url_dom = "https://api.coingecko.com/api/v3/global"
