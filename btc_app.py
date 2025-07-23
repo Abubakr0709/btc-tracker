@@ -105,22 +105,17 @@ from google.oauth2.service_account import Credentials
 import gspread
 import pandas as pd
 
+
+import toml
+
 @st.cache_data(ttl=86400)
 def load_google_sheet(sheet_name, worksheet_name):
     try:
-        scope = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-        # ✅ Try to load from Streamlit secrets (Render default)
-        if "google_credentials" in st.secrets:
-            credentials_dict = json.loads(st.secrets["google_credentials"]["value"])
-        # ✅ If not, fallback to secrets.toml in root (when .streamlit/secrets.toml isn't supported)
-        else:
-            with open("secrets.toml") as f:
-                secrets = toml.load(f)
-                credentials_dict = json.loads(secrets["google_credentials"]["value"])
+        # Load from renamed 'secrets.toml'
+        secrets = toml.load("secrets.toml")
+        credentials_dict = json.loads(secrets["google_credentials"]["value"])
 
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
         if creds and creds.expired and creds.refresh_token:
@@ -135,7 +130,7 @@ def load_google_sheet(sheet_name, worksheet_name):
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df.set_index('date', inplace=True)
 
-        # Force numeric types
+        # Force numeric columns
         for col in ['price', 'change_24h', 'change_7d']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -145,6 +140,7 @@ def load_google_sheet(sheet_name, worksheet_name):
     except Exception as e:
         st.error(f"❌ Failed to load Google Sheet: {e}")
         return None
+
 
 
     
