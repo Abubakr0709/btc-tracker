@@ -9,9 +9,11 @@ from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 
 # --- Load Google Credentials ---
-# --- Load Google Credentials ---
+
 import os
 import json
+from google.oauth2.service_account import Credentials
+
 
 try:
     creds_data = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])  # Render uses this
