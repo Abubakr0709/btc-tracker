@@ -42,7 +42,7 @@ st.set_page_config(page_title="🐺 BTC Watchdog", layout="centered", initial_si
 st.title("🐺 BTC Watchdog Dashboard")
 
 # --- Live Price Fetch ---
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=3600)  # Cache for 10 minutes
 def get_live_btc_price_and_change():
     try:
         url = "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=true"
@@ -115,7 +115,8 @@ def load_google_sheet(sheet_name, worksheet_name):
 
         # Load from renamed 'secrets.toml'
         secrets = toml.load("secrets.toml")
-        credentials_dict = json.loads(secrets["google_credentials"]["value"])
+        credentials_dict = st.secrets["google_credentials"]
+
 
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
         if creds and creds.expired and creds.refresh_token:
