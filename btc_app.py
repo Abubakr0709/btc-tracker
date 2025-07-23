@@ -249,6 +249,7 @@ except Exception as e:
 
 
 # --- Fetch & Log Today's Price ---
+# --- Fetch & Log Today's Price ---
 def fetch_and_log_today_price(df):
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -259,9 +260,10 @@ def fetch_and_log_today_price(df):
         if today_str in df.index.strftime("%Y-%m-%d").tolist():
             return df
 
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-        response = requests.get(url)
-        price = float(response.json()['price'])
+        # ✅ Use CoinGecko-based live price
+        price, _ = get_live_btc_price_and_change()
+        if price is None:
+            raise ValueError("Live BTC price is not available.")
 
         df_sorted = df.sort_index()
         y_price = df_sorted['price'].iloc[-1] if len(df) >= 1 else price
