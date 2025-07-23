@@ -10,6 +10,7 @@ import json
 import random
 import plotly.graph_objects as go
 from btc_cycle_analyzer import detect_bull_cycles, cluster_bull_signals, align_cycles
+import os
 
 
 # --- Load Full Historical BTC Data ---
@@ -93,14 +94,33 @@ def get_altseason_metrics():
 
 
 
+# # --- Google Sheets Setup ---
 # --- Google Sheets Setup ---
-@st.cache_data(ttl=86400)  # Cache for 24 hours
+import streamlit as st
+import json
+import toml
+import os
+from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
+import gspread
+import pandas as pd
+
+@st.cache_data(ttl=86400)
 def load_google_sheet(sheet_name, worksheet_name):
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
 
-        credentials_json = st.secrets["google_credentials"]["value"]
-        credentials_dict = json.loads(credentials_json)
+        # ✅ Try to load from Streamlit secrets (Render default)
+        if "google_credentials" in st.secrets:
+            credentials_dict = json.loads(st.secrets["google_credentials"]["value"])
+        # ✅ If not, fallback to secrets.toml in root (when .streamlit/secrets.toml isn't supported)
+        else:
+            with open("secrets.toml") as f:
+                secrets = toml.load(f)
+                credentials_dict = json.loads(secrets["google_credentials"]["value"])
 
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
         if creds and creds.expired and creds.refresh_token:
@@ -112,14 +132,21 @@ def load_google_sheet(sheet_name, worksheet_name):
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         df.columns = [col.lower().strip() for col in df.columns]
-        df['date'] = pd.to_datetime(df['date'])
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df.set_index('date', inplace=True)
 
-        return df  # Return the DataFrame
+        # Force numeric types
+        for col in ['price', 'change_24h', 'change_7d']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df
 
     except Exception as e:
         st.error(f"❌ Failed to load Google Sheet: {e}")
         return None
+
+
     
 # --- Load Full Historical BTC Data (2010–2025) ---
 @st.cache_data(ttl=86400)
