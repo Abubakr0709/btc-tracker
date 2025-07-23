@@ -44,34 +44,31 @@ st.title("🐺 BTC Watchdog Dashboard")
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_live_btc_price_and_change():
     try:
-        # Fetch current price
-        url_current = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-        response_current = requests.get(url_current, timeout=10)
-        response_current.raise_for_status()
-        data_current = response_current.json()
+        # Current price (USD)
+        url_now = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+        response_now = requests.get(url_now, timeout=10)
+        response_now.raise_for_status()
+        data_now = response_now.json()
 
-        if 'price' not in data_current:
-            raise ValueError(f"'price' not found in Binance response: {data_current}")
-        
-        price_now = float(data_current['price'])
+        if 'bitcoin' not in data_now or 'usd' not in data_now['bitcoin']:
+            raise ValueError(f"'usd' not found in CoinGecko response: {data_now}")
 
-        # Fetch 24h stats
-        url_24h = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+        price_now = float(data_now['bitcoin']['usd'])
+
+        # Simulate 24h ago price using 24h % change
+        url_24h = "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=true"
         response_24h = requests.get(url_24h, timeout=10)
         response_24h.raise_for_status()
         data_24h = response_24h.json()
 
-        if 'priceChangePercent' not in data_24h:
-            raise ValueError(f"'priceChangePercent' not found: {data_24h}")
-
-        # Simulate price 24h ago and calculate % change
-        price_24h_ago = price_now / (1 + float(data_24h["priceChangePercent"]) / 100)
+        price_change_percent = data_24h['market_data']['price_change_percentage_24h']
+        price_24h_ago = price_now / (1 + price_change_percent / 100)
         change_percent = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
         return price_now, change_percent
 
     except Exception as e:
-        st.error(f"❌ Could not fetch live BTC price (Binance): {e}")
+        st.error(f"❌ Could not fetch live BTC price (CoinGecko): {e}")
         return None, None
 
     
