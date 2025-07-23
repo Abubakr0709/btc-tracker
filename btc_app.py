@@ -44,16 +44,27 @@ st.title("🐺 BTC Watchdog Dashboard")
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_live_btc_price_and_change():
     try:
-        # Current price
+        # Fetch current price
         url_current = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-        response_current = requests.get(url_current)
-        price_now = float(response_current.json()['price'])
+        response_current = requests.get(url_current, timeout=10)
+        response_current.raise_for_status()
+        data_current = response_current.json()
 
-        # Simulated 24h ago price using 24hr ticker data
+        if 'price' not in data_current:
+            raise ValueError(f"'price' not found in Binance response: {data_current}")
+        
+        price_now = float(data_current['price'])
+
+        # Fetch 24h stats
         url_24h = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-        response_24h = requests.get(url_24h)
+        response_24h = requests.get(url_24h, timeout=10)
+        response_24h.raise_for_status()
         data_24h = response_24h.json()
 
+        if 'priceChangePercent' not in data_24h:
+            raise ValueError(f"'priceChangePercent' not found: {data_24h}")
+
+        # Simulate price 24h ago and calculate % change
         price_24h_ago = price_now / (1 + float(data_24h["priceChangePercent"]) / 100)
         change_percent = ((price_now - price_24h_ago) / price_24h_ago) * 100
 
@@ -62,26 +73,36 @@ def get_live_btc_price_and_change():
     except Exception as e:
         st.error(f"❌ Could not fetch live BTC price (Binance): {e}")
         return None, None
+
     
+@st.cache_data(ttl=600)  # cache result for 10 minutes
 def get_altseason_metrics():
     try:
-        # ETH/BTC and USD prices
-        url_price = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,btc"
-        price_data = requests.get(url_price).json()
-
-        eth_btc = price_data["ethereum"]["btc"]
-        btc_usd = price_data["bitcoin"]["usd"]
-        eth_usd = price_data["ethereum"]["usd"]
-
-        # BTC dominance
         url_dom = "https://api.coingecko.com/api/v3/global"
-        dom_data = requests.get(url_dom).json()
-        btc_dominance = dom_data["data"]["market_cap_percentage"]["btc"]
+        url_prices = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,btc"
 
-        return btc_dominance, eth_btc, btc_usd, eth_usd
+        response_dom = requests.get(url_dom, timeout=10)
+        response_prices = requests.get(url_prices, timeout=10)
+
+        response_dom.raise_for_status()
+        response_prices.raise_for_status()
+
+        dom_data = response_dom.json()
+        price_data = response_prices.json()
+
+        btc_dom = dom_data['data']['market_cap_percentage']['btc']
+        eth_btc = price_data['ethereum']['btc']
+        btc_usd = price_data['bitcoin']['usd']
+        eth_usd = price_data['ethereum']['usd']
+
+        return btc_dom, eth_btc, btc_usd, eth_usd
+
     except Exception as e:
         st.warning(f"⚠️ Could not fetch altseason metrics: {e}")
         return None, None, None, None
+
+
+
 
 
 # --- Google Sheets Setup ---
@@ -368,9 +389,11 @@ st.metric("📊 Predicted Trend", trend_prediction)
 # --- Altseason Score ---
 st.subheader("🔀 Altseason Rotation Signal")
 
-try:
-    btc_dom, eth_btc, btc_usd, eth_usd = get_altseason_metrics()
+btc_dom, eth_btc, btc_usd, eth_usd = get_altseason_metrics()
 
+if None in (btc_dom, eth_btc, btc_usd, eth_usd):
+    st.warning("⚠️ Could not calculate Altseason Score due to missing data.")
+else:
     score = 0
 
     # BTC dominance points
@@ -406,8 +429,6 @@ try:
     st.caption(f"BTC Dominance: {btc_dom:.2f}%")
     st.caption(f"ETH/BTC Ratio: {eth_btc:.4f}")
 
-except Exception as e:
-    st.warning(f"⚠️ Could not calculate Altseason Score: {e}")
 
 
 # --- 7-Day BTC Price Trend ---
