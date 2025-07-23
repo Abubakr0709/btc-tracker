@@ -113,9 +113,13 @@ def load_google_sheet(sheet_name, worksheet_name):
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-        # Load from renamed 'secrets.toml'
-        secrets = toml.load("secrets.toml")
-        credentials_dict = st.secrets["google_credentials"]
+        if "google_credentials" not in st.secrets:
+            st.error("❌ 'google_credentials' not found in Streamlit secrets.")
+            st.stop()
+
+        credentials_dict = json.loads(st.secrets["google_credentials"]["value"])
+
+
 
 
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
